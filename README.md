@@ -25,7 +25,7 @@
 
 **Kilimo-Space** is a Remote Sensing project that uses multi-spectral satellite data to identify what crops are growing in specific fields across Western Kenya.
 
-By analyzing the "Spectral Signature" of land patches (how they reflect light), the model can distinguish between **Maize, Cassava, and Napir Grass** without anyone needing to visit the farm physically. This technology enables scalable food security monitoring for the Ministry of Agriculture.  Website https://agro-whispers-west.lovable.app
+By analyzing the "Spectral Signature" of land patches (how they reflect light), the model can distinguish between **Maize, Cassava, and Napir Grass** without anyone needing to visit the farm physically. This technology enables scalable food security monitoring for the Ministry of Agriculture.  Website https://agro-whispers-west.lovable.app Streamlit app https://kilimospace-ezzf6axmzwt3xtohn4rvc8.streamlit.app/
 
 ---
 
