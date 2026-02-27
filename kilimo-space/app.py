@@ -41,7 +41,7 @@ def load_crop_model():
 # -----------------------------------------------
 @st.cache_resource
 def load_disease_model():
-    model = tf.keras.models.load_model("disease_model.keras")
+    model = tf.keras.models.load_model("disease_model.h5")
     with open("disease_class_names.pkl", "rb") as f:
         class_names = pickle.load(f)
     with open("disease_class_indices.pkl", "rb") as f:
