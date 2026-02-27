@@ -41,7 +41,33 @@ def load_crop_model():
 # -----------------------------------------------
 @st.cache_resource
 def load_disease_model():
-    model = tf.keras.models.load_model("disease_model.h5")
+    from tensorflow.keras.applications import MobileNetV2
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import Dense, Dropout, GlobalAveragePooling2D
+    
+    base_model = MobileNetV2(
+        input_shape=(224, 224, 3),
+        include_top=False,
+        weights=None
+    )
+    base_model.trainable = False
+    
+    model = Sequential([
+        base_model,
+        GlobalAveragePooling2D(),
+        Dense(128, activation="relu"),
+        Dropout(0.3),
+        Dense(4, activation="softmax")
+    ])
+    
+    model.compile(
+        optimizer="adam",
+        loss="categorical_crossentropy",
+        metrics=["accuracy"]
+    )
+    
+    model.load_weights("disease_weights.weights.h5")
+    
     with open("disease_class_names.pkl", "rb") as f:
         class_names = pickle.load(f)
     with open("disease_class_indices.pkl", "rb") as f:
