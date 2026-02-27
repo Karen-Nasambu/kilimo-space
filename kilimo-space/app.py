@@ -1,3 +1,7 @@
+import os
+# Fix file paths for Streamlit Cloud deployment
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 
 import streamlit as st
 import pickle
