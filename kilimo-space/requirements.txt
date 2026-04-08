@@ -7,3 +7,4 @@ scikit-learn
 xgboost
 Pillow
 h5py
+earthengine-api
