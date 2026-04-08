@@ -118,7 +118,7 @@ with tab1:
                         scaled_input = scaler.transform(input_df)
                         
                         # PREDICTION LOGIC with SAFETY OVERRIDE
-                        if ndvi < 0.1:
+                        if ndvi < 0.35:
                             # If it's not green, it's not a crop.
                             prediction_label = "Non-Vegetated (Water / Bare Soil / Building)"
                             probabilities = [0.0] * len(le.classes_)
