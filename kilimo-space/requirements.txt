@@ -8,3 +8,4 @@ xgboost
 Pillow
 h5py
 earthengine-api
+geopy
