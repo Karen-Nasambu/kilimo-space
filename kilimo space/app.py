@@ -22,7 +22,8 @@ def init_earth_engine():
         credentials = ee.ServiceAccountCredentials(key_dict['client_email'], key_data=st.secrets["EARTHENGINE_TOKEN"])
         ee.Initialize(credentials)
         return True
-    except Exception as e:
+   except Exception as e:
+        st.error(f"DEBUG ERROR: {e}")
         return False
 
 ee_ready = init_earth_engine()
