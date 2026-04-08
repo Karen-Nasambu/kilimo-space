@@ -6,6 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import ee
 import json
+from datetime import datetime
 
 # Fix file paths for Streamlit Cloud deployment
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -22,7 +23,7 @@ def init_earth_engine():
         credentials = ee.ServiceAccountCredentials(key_dict['client_email'], key_data=st.secrets["EARTHENGINE_TOKEN"])
         ee.Initialize(credentials)
         return True
-   except Exception as e:
+    except Exception as e:
         st.error(f"DEBUG ERROR: {e}")
         return False
 
@@ -59,65 +60,75 @@ with tab1:
     st.write("Enter GPS coordinates to fetch the latest Sentinel-2 surface reflectance data.")
     
     col1, col2 = st.columns(2)
-    lat = col1.number_input("Latitude", value=0.515, format="%.5f") # Default roughly Western Kenya
+    lat = col1.number_input("Latitude", value=0.515, format="%.5f") 
     lon = col2.number_input("Longitude", value=34.275, format="%.5f")
 
     if st.button("Fetch Satellite Data & Predict", type="primary"):
         if not ee_ready:
             st.error("Earth Engine is not configured properly in Streamlit Secrets.")
         else:
-            with st.spinner("Connecting to Copernicus Sentinel-2... Fetching 12-month time-series..."):
+            with st.spinner("Connecting to Sentinel-2... Analyzing Spectral Signatures..."):
                 try:
-                    # Define point
                     point = ee.Geometry.Point([lon, lat])
                     
-                    # Fetch Sentinel-2 Harmonized Surface Reflectance
-                    # We get the most recent clear images
+                    # We fetch data from 2019 to match the model's training period for accuracy
                     collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
                         .filterBounds(point) \
-                        .filterDate('2023-01-01', '2025-12-31') \
+                        .filterDate('2019-01-01', '2019-12-31') \
                         .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)) \
                         .select(['B2', 'B3', 'B4', 'B8']) \
-                        .sort('system:time_start', False) \
-                        .limit(45) # Fetch enough dates to map to the 169 features
+                        .sort('system:time_start')
                     
-                    # Extract values for the point
                     def get_values(image):
+                        date = image.date().format('YYYY-MM-DD')
                         val = image.reduceRegion(ee.Reducer.mean(), point, 10)
-                        return ee.Feature(None, val)
+                        return ee.Feature(None, val).set('date', date)
                     
-                    data = collection.map(get_values).getInfo()['features']
+                    features_ee = collection.map(get_values).getInfo()['features']
                     
-                    # Flatten the data into a list of numbers
-                    fetched_values = []
-                    for f in data:
-                        props = f['properties']
-                        # Safely grab bands, defaulting to 0 if missing
-                        fetched_values.extend([props.get('B2', 0), props.get('B3', 0), props.get('B4', 0), props.get('B8', 0)])
-                    
-                    # Normalizer Pipeline: Map the recent data to the model's expected 169 features
-                    # If we don't have exactly 169, we pad or truncate to match the expected tensor size
-                    if len(fetched_values) == 0:
-                        st.error("No clear satellite imagery found for this location. Try another coordinate.")
+                    if len(features_ee) == 0:
+                        st.error("No clear satellite imagery found for this location in 2019. Try another coordinate.")
                     else:
+                        # Extract data and the captured dates
+                        captured_dates = [f['properties']['date'] for f in features_ee]
+                        fetched_values = []
+                        for f in features_ee:
+                            props = f['properties']
+                            fetched_values.extend([props.get('B2', 0), props.get('B3', 0), props.get('B4', 0), props.get('B8', 0)])
+                        
+                        # MATCH TENSOR SIZE (169 features)
+                        # We repeat the sequence to fill the model's expected 169 columns
                         while len(fetched_values) < len(feature_cols):
-                            fetched_values.extend(fetched_values) # Pad by repeating the time-series
+                            fetched_values.extend(fetched_values) 
+                        final_values = fetched_values[:len(feature_cols)]
                         
-                        fetched_values = fetched_values[:len(feature_cols)] # Truncate to exact length
-                        
-                        # Create the DataFrame
-                        live_df = pd.DataFrame([fetched_values], columns=feature_cols)
-                        
-                        # Predict
+                        # Create DataFrame and Scale
+                        live_df = pd.DataFrame([final_values], columns=feature_cols)
                         X_live_scaled = scaler.transform(live_df)
+                        
+                        # PREDICTION
                         live_pred = model.predict(X_live_scaled)
                         predicted_crop = le.inverse_transform(live_pred)[0]
                         
-                        st.success("Data successfully normalized and mapped to prediction engine!")
-                        st.metric("Predicted Crop Type", predicted_crop)
+                        # GET PROBABILITIES (The "Confidence" Chart)
+                        probs = model.predict_proba(X_live_scaled)[0]
+                        crop_labels = le.classes_
                         
-                        with st.expander("View Raw Normalized Telemetry"):
-                            st.write(live_df)
+                        # DISPLAY RESULTS
+                        st.success(f"Analysis complete for imagery taken around {captured_dates[0]}")
+                        
+                        res_col1, res_col2 = st.columns(2)
+                        with res_col1:
+                            st.metric("Predicted Crop Type", predicted_crop)
+                            st.info(f"Captured Date Range: {captured_dates[0]} to {captured_dates[-1]}")
+                        
+                        with res_col2:
+                            st.write("### Model Confidence Score")
+                            prob_df = pd.DataFrame({'Crop': crop_labels, 'Confidence': probs})
+                            st.bar_chart(prob_df.set_index('Crop'))
+
+                        with st.expander("View Spectral Band Telemetry"):
+                            st.dataframe(live_df)
 
                 except Exception as e:
                     st.error(f"Failed to fetch from Earth Engine: {e}")
@@ -139,7 +150,7 @@ with tab2:
             st.success("Predictions Complete!")
             st.write(data[['Predicted_Crop'] + [c for c in data.columns if c != 'Predicted_Crop']])
         else:
-            st.error("CSV columns do not match the required 169 Sentinel-2 bands.")
+            st.error(f"CSV columns do not match the required 169 Sentinel-2 bands. Missing: {set(feature_cols) - set(data.columns)}")
 
 # --- TAB 3: SAMPLE DEMO ---
 with tab3:
@@ -170,8 +181,7 @@ with tab4:
     
     st.info("""
     **Architecture Note:**
-    This system uses an XGBoost/Random Forest core trained on 2019 time-series Sentinel-2 data. 
-    To enable **real-time predictions**, the system features a 'Normalizer Pipeline' via Google Earth Engine. 
-    It fetches current multi-spectral bands (B2, B3, B4, B8) and maps the recent phenological curves to the 
-    historical tensor shapes, allowing the engine to classify modern crops based on their learned spectral signatures.
+    This system uses an XGBoost core trained on 2019 time-series Sentinel-2 data. 
+    It fetches current multi-spectral bands (B2, B3, B4, B8) and maps the phenological curves 
+    to the historical tensor shapes using a Padding-Truncation pipeline.
     """)
