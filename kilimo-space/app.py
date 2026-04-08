@@ -23,6 +23,7 @@ def init_earth_engine():
         ee.Initialize(credentials)
         return True
     except Exception as e:
+        st.error(f"DEBUG ERROR: {e}")
         return False
 
 ee_ready = init_earth_engine()
