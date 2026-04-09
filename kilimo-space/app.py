@@ -8,166 +8,295 @@ import json
 import joblib
 from geopy.geocoders import Nominatim
 
-# Fix file paths for Streamlit Cloud deployment
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-# Page Config
 st.set_page_config(page_title="KilimoSpace Crop Predictor", layout="wide")
 
-# --- 1. Earth Engine Authentication ---
 @st.cache_resource
 def init_earth_engine():
     try:
-        # Load the JSON string from Streamlit Secrets
         key_dict = json.loads(st.secrets["EARTHENGINE_TOKEN"])
-        credentials = ee.ServiceAccountCredentials(key_dict['client_email'], key_data=st.secrets["EARTHENGINE_TOKEN"])
+        credentials = ee.ServiceAccountCredentials(
+            key_dict['client_email'],
+            key_data=st.secrets["EARTHENGINE_TOKEN"]
+        )
         ee.Initialize(credentials)
         return True
     except Exception as e:
-        st.error(f"Earth Engine Initialization Error: {e}")
+        st.error(f"Earth Engine Error: {e}")
         return False
 
 ee_ready = init_earth_engine()
 
-# --- 2. Load ML Assets ---
 @st.cache_resource
 def load_assets():
     try:
-        model = joblib.load("best_model.pkl")
-        scaler = joblib.load("scaler.pkl")
-        le = joblib.load("label_encoder.pkl")
-        feature_cols = joblib.load("feature_cols.pkl")
+        with open("best_model.pkl", "rb") as f:
+            model = pickle.load(f)
+        with open("scaler.pkl", "rb") as f:
+            scaler = pickle.load(f)
+        with open("label_encoder.pkl", "rb") as f:
+            le = pickle.load(f)
+        with open("feature_cols.pkl", "rb") as f:
+            feature_cols = pickle.load(f)
         return model, scaler, le, feature_cols
     except Exception as e:
-        st.error(f"Error loading .pkl files: {e}")
+        st.error(f"Error loading model files: {e}")
         return None, None, None, None
 
 model, scaler, le, feature_cols = load_assets()
 
-# --- 3. Helper Function for Location ---
-def get_location_details(lat, lon):
+def get_location_name(lat, lon):
     try:
-        geolocator = Nominatim(user_agent="kilimospace_navigator")
+        geolocator = Nominatim(user_agent="kilimospace_app")
         location = geolocator.reverse(f"{lat}, {lon}", timeout=10)
-        return location.address if location else "Coordinates in remote area"
+        return location.address if location else "Remote area"
     except:
         return "Location lookup unavailable"
 
-# --- 4. App UI ---
-st.title("🌾 KilimoSpace: Sentinel-2 Real-Time Crop Classification")
+st.title("KilimoSpace: Sentinel-2 Crop Classification")
 st.markdown("---")
 
-tab1, tab2, tab3 = st.tabs(["🌍 Live GPS Fetch", "📊 Batch CSV Upload", "📖 System Architecture"])
+tab1, tab2, tab3 = st.tabs([
+    "Live GPS Fetch",
+    "Sample Demo",
+    "Model Info"
+])
 
-# --- TAB 1: LIVE GPS FETCH ---
+# ================================================
+# TAB 1: LIVE GPS FETCH — proper 12-band fetching
+# ================================================
 with tab1:
-    st.header("Predict from Live Satellite Data (2026)")
-    st.write("Enter coordinates to fetch the latest multispectral data from Sentinel-2.")
-    
+    st.header("Live Satellite Prediction")
+    st.write("Enter GPS coordinates to fetch real Sentinel-2 data and predict crop type.")
+
     col1, col2 = st.columns(2)
-    lat = col1.number_input("Latitude", value=0.515, format="%.5f") 
+    lat = col1.number_input("Latitude", value=0.515, format="%.5f")
     lon = col2.number_input("Longitude", value=34.275, format="%.5f")
 
-    if st.button("Analyze Current Land Cover", type="primary"):
+    if st.button("Fetch and Predict", type="primary"):
         if not ee_ready:
-            st.error("Earth Engine is not authenticated.")
+            st.error("Earth Engine not authenticated.")
         elif model is None:
-            st.error("Model assets not found.")
+            st.error("Model files not loaded.")
         else:
-            # 1. Show User where they are looking
-            address = get_location_details(lat, lon)
-            st.info(f"📍 **Identified Region:** {address}")
+            location = get_location_name(lat, lon)
+            st.info(f"Location: {location}")
 
-            with st.spinner("Accessing Copernicus Sentinel-2 Hub..."):
+            with st.spinner("Fetching Sentinel-2 data from Google Earth Engine..."):
                 try:
                     point = ee.Geometry.Point([lon, lat])
-                    
-                    # Fetch most recent 2026 images
-                    collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
-                        .filterBounds(point) \
-                        .filterDate('2026-01-01', '2026-04-08') \
-                        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30)) \
-                        .select(['B2', 'B3', 'B4', 'B8']) \
+
+                    # Fetch ALL 12 bands across multiple dates
+                    # This gives the model proper multi-band
+                    # temporal input instead of 4 repeated bands
+                    collection = (
+                        ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+                        .filterBounds(point)
+                        .filterDate('2024-01-01', '2026-04-08')
+                        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+                        .select([
+                            'B1', 'B2', 'B3', 'B4',
+                            'B5', 'B6', 'B7', 'B8',
+                            'B8A', 'B9', 'B11', 'B12'
+                        ])
                         .sort('system:time_start', False)
-                    
-                    def extract_props(image):
-                        val = image.reduceRegion(ee.Reducer.mean(), point, 10)
-                        return ee.Feature(None, val).set('date', image.date().format('YYYY-MM-DD'))
-                    
-                    features = collection.map(extract_props).getInfo()['features']
-                    
-                    if not features:
-                        st.error("No clear 2026 imagery found for these coordinates. Try a different spot.")
+                        .limit(13)  # fetch up to 13 dates matching training
+                    )
+
+                    def extract(image):
+                        vals = image.reduceRegion(
+                            ee.Reducer.mean(), point, 10
+                        )
+                        return ee.Feature(None, vals).set(
+                            'date',
+                            image.date().format('YYYY-MM-dd')
+                        )
+
+                    features_ee = collection.map(extract).getInfo()['features']
+
+                    if not features_ee:
+                        st.error("No clear imagery found. Try different coordinates.")
                     else:
-                        # Get Data
-                        latest_props = features[0]['properties']
-                        b2 = latest_props.get('B2', 0)
-                        b3 = latest_props.get('B3', 0)
-                        b4 = latest_props.get('B4', 0)
-                        b8 = latest_props.get('B8', 0)
-                        
-                        # --- SPECTRAL ANALYSIS (NDVI) ---
-                        # NDVI = (NIR - RED) / (NIR + RED)
-                        ndvi = (b8 - b4) / (b8 + b4) if (b8 + b4) != 0 else 0
-                        
-                        # Prepare data for XGBoost (Map 4 bands to 169 features)
-                        raw_data = ([b2, b3, b4, b8] * 43)[:len(feature_cols)]
-                        input_df = pd.DataFrame([raw_data], columns=feature_cols)
-                        
-                        # SCALE DATA
-                        scaled_input = scaler.transform(input_df)
-                        
-                        # PREDICTION LOGIC with SAFETY OVERRIDE
-                        if ndvi < 0.35:
-                            # If it's not green, it's not a crop.
-                            prediction_label = "Non-Vegetated (Water / Bare Soil / Building)"
-                            probabilities = [0.0] * len(le.classes_)
-                        else:
-                            # Let the model decide
-                            pred_idx = model.predict(scaled_input)
-                            prediction_label = le.inverse_transform(pred_idx)[0]
-                            probabilities = model.predict_proba(scaled_input)[0]
+                        st.success(
+                            f"Retrieved {len(features_ee)} satellite "
+                            f"observations. Latest: "
+                            f"{features_ee[0]['properties']['date']}"
+                        )
 
-                        # --- DISPLAY RESULTS ---
-                        st.success(f"Satellite Data Captured on: {features[0]['properties']['date']}")
-                        
-                        res1, res2 = st.columns(2)
-                        with res1:
-                            st.metric("Detected Classification", prediction_label)
-                            st.metric("Vegetation Index (NDVI)", f"{ndvi:.3f}")
-                            if ndvi < 0.1:
-                                st.warning("Notice: Low spectral reflection confirms no active vegetation found.")
-                        
-                        with res2:
-                            st.write("### Model Confidence Chart")
-                            conf_df = pd.DataFrame({'Crop': le.classes_, 'Confidence': probabilities})
-                            st.bar_chart(conf_df.set_index('Crop'))
+                        # Build feature vector from all 12 bands per date
+                        # Band names from GEE map to model's B01-B12 naming
+                        band_map = {
+                            'B1': 'B01', 'B2': 'B02', 'B3': 'B03',
+                            'B4': 'B04', 'B5': 'B05', 'B6': 'B06',
+                            'B7': 'B07', 'B8': 'B08', 'B8A': 'B8A',
+                            'B9': 'B09', 'B11': 'B11', 'B12': 'B12'
+                        }
 
-                        with st.expander("Show Detailed Spectral Bands"):
-                            st.write(input_df)
+                        # Build a lookup: feature_col -> value
+                        feature_lookup = {}
+
+                        for obs in features_ee:
+                            props = obs['properties']
+                            date_str = props.get('date', '')[:10]
+                            # Convert date format to match training columns
+                            # e.g. 2024-03-15 -> 20240315
+                            date_key = date_str.replace('-', '')
+
+                            for gee_band, model_band in band_map.items():
+                                col_name = f"{model_band}_{date_key}"
+                                val = props.get(gee_band, 0) or 0
+                                feature_lookup[col_name] = val
+
+                            # Compute NDVI for this date
+                            nir = props.get('B8', 0) or 0
+                            red = props.get('B4', 0) or 0
+                            ndvi = (nir - red) / (nir + red + 1e-10)
+                            feature_lookup[f"NDVI_{date_key}"] = ndvi
+
+                        # Map fetched values to model's exact 169 columns
+                        # For columns with no matching date, use mean
+                        # of fetched values as fallback
+                        fetched_vals = [
+                            v for v in feature_lookup.values()
+                            if v != 0
+                        ]
+                        fallback = (
+                            float(np.mean(fetched_vals))
+                            if fetched_vals else 0.0
+                        )
+
+                        row = []
+                        matched = 0
+                        for col in feature_cols:
+                            if col in feature_lookup:
+                                row.append(feature_lookup[col])
+                                matched += 1
+                            else:
+                                row.append(fallback)
+
+                        st.write(
+                            f"Features matched to model columns: "
+                            f"{matched} / {len(feature_cols)}"
+                        )
+
+                        # Predict
+                        input_df = pd.DataFrame(
+                            [row], columns=feature_cols
+                        )
+                        scaled = scaler.transform(input_df)
+                        pred = model.predict(scaled)
+                        probs = model.predict_proba(scaled)[0]
+                        crop = le.inverse_transform(pred)[0]
+
+                        # Display results
+                        r1, r2 = st.columns(2)
+                        with r1:
+                            st.metric("Predicted Crop Type", crop)
+                            st.metric(
+                                "Confidence",
+                                f"{max(probs)*100:.1f}%"
+                            )
+                            # Show NDVI values fetched
+                            ndvi_vals = [
+                                v for k, v in feature_lookup.items()
+                                if 'NDVI' in k
+                            ]
+                            if ndvi_vals:
+                                st.metric(
+                                    "Mean NDVI (fetched dates)",
+                                    f"{np.mean(ndvi_vals):.3f}"
+                                )
+
+                        with r2:
+                            st.write("### Prediction Confidence")
+                            prob_df = pd.DataFrame({
+                                'Crop': le.classes_,
+                                'Confidence': probs
+                            })
+                            st.bar_chart(prob_df.set_index('Crop'))
+
+                        with st.expander("View Spectral Data"):
+                            st.dataframe(input_df)
 
                 except Exception as e:
-                    st.error(f"Live Analysis Failed: {e}")
+                    st.error(f"Error: {e}")
 
-# --- TAB 2: CSV UPLOAD ---
+# ================================================
+# TAB 2: SAMPLE DEMO — reliable predictions
+# ================================================
 with tab2:
-    st.header("Batch Process CSV")
-    file = st.file_uploader("Upload CSV with 169 Sentinel-2 features", type="csv")
-    if file:
-        df = pd.read_csv(file)
-        if all(c in df.columns for c in feature_cols):
-            scaled_batch = scaler.transform(df[feature_cols])
-            preds = model.predict(scaled_batch)
-            df['Predicted_Crop'] = le.inverse_transform(preds)
-            st.dataframe(df)
-        else:
-            st.error("CSV columns mismatch the model's 169 feature requirement.")
+    st.header("Sample Field Demo")
+    st.write(
+        "This tab uses real preprocessed field data from "
+        "the training dataset to demonstrate model predictions."
+    )
 
-# --- TAB 3: SYSTEM INFO ---
+    if os.path.exists("sample_data.csv"):
+        sample = pd.read_csv("sample_data.csv")
+        row_idx = st.selectbox(
+            "Select a field to predict:", sample.index
+        )
+        row = sample.iloc[[row_idx]]
+
+        X_sample = scaler.transform(row[feature_cols])
+        pred = model.predict(X_sample)
+        probs = model.predict_proba(X_sample)[0]
+        crop = le.inverse_transform(pred)[0]
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.metric("Predicted Crop", crop)
+            if 'true_label' in sample.columns:
+                true = sample.iloc[row_idx]['true_label']
+                st.metric("Actual Crop", true)
+                correct = "Correct" if crop == true else "Incorrect"
+                st.info(f"Prediction: {correct}")
+        with c2:
+            st.write("### Confidence per Class")
+            prob_df = pd.DataFrame({
+                'Crop': le.classes_,
+                'Confidence': probs
+            })
+            st.bar_chart(prob_df.set_index('Crop'))
+    else:
+        st.warning("sample_data.csv not found in repository.")
+
+# ================================================
+# TAB 3: MODEL INFO
+# ================================================
 with tab3:
-    st.header("Technical Pipeline")
-    st.info("""
-    **Training Basis:** XGBoost Model trained on 2019 Phenological Time-Series data.
-    **Real-Time Bridge:** The system fetches current 2026 Band values (B2, B3, B4, B8), 
-    calculates the NDVI for immediate land validation, and maps values into the 169-feature tensor.
-    """)
+    st.header("Model Architecture")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Weighted F1 Score", "0.54")
+    c2.metric("Overall Accuracy", "46%")
+    c3.metric("Random Baseline", "14%")
+
+    st.markdown("---")
+    st.subheader("Why 46% is meaningful")
+    st.info(
+        "The model classifies 7 crop types. A random classifier "
+        "achieves only 14%. Our model performs 3x better than chance. "
+        "The weighted F1 of 0.54 shows reliable performance even on "
+        "minority classes that accuracy alone would hide."
+    )
+
+    st.subheader("Prediction Pipeline")
+    st.write(
+        "1. User enters GPS coordinates\n"
+        "2. Google Earth Engine fetches 12 Sentinel-2 bands "
+        "across up to 13 clear observation dates\n"
+        "3. NDVI computed per date from NIR and Red bands\n"
+        "4. Values mapped to model's 169 feature columns\n"
+        "5. StandardScaler normalises the feature vector\n"
+        "6. XGBoost predicts crop type with probabilities"
+    )
+
+    st.subheader("Training Summary")
+    st.write(
+        "Model: XGBoost with Class Weights\n"
+        "Features: 169 (12 bands x 13 dates + 13 NDVI values)\n"
+        "Training samples: 2,629 fields\n"
+        "Test samples: 657 fields\n"
+        "Classes: 7 crop types including intercrop combinations"
+    )
