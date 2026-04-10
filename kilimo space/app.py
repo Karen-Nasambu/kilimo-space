@@ -64,7 +64,7 @@ st.write("Select a target date and enter coordinates to fetch 12-band multispect
 
 # User Inputs
 col1, col2, col3 = st.columns(3)
-target_date = col1.date_input("Select Target Date", datetime.date(2026, 3, 1))
+target_date = col1.date_input("Select Target Date", datetime.date(2026, 1, 7))
 lat = col2.number_input("Latitude", value=0.515, format="%.5f") 
 lon = col3.number_input("Longitude", value=34.275, format="%.5f")
 
@@ -80,9 +80,12 @@ if st.button("Analyze Current Land Cover", type="primary"):
         address = get_location_details(lat, lon)
         st.info(f"📍 **Identified Region:** {address}")
 
-        with st.spinner(f"Accessing Google Earth Engine for 12-band data around {target_date}..."):
+        with st.spinner(f"Processing full farm area... Accessing GEE for 12-band data around {target_date}..."):
             try:
-                point = ee.Geometry.Point([lon, lat])
+                # NEW: Instead of a single point, we create a 100-meter radius buffer around the point
+                # This forces Earth Engine to analyze the "whole farm" instead of one pixel
+                center_point = ee.Geometry.Point([lon, lat])
+                farm_area = center_point.buffer(100) 
                 
                 # Fetch images within a 60-day window of the chosen date
                 start_date = (target_date - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
@@ -90,14 +93,15 @@ if st.button("Analyze Current Land Cover", type="primary"):
                 
                 # Fetching ALL 12 Sentinel-2 SR bands
                 collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
-                    .filterBounds(point) \
+                    .filterBounds(farm_area) \
                     .filterDate(start_date, end_date) \
                     .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30)) \
                     .select(['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12']) \
                     .sort('system:time_start', False)
                 
                 def extract_props(image):
-                    val = image.reduceRegion(ee.Reducer.mean(), point, 10)
+                    # NEW: Calculates the average of all pixels inside the 100m farm area
+                    val = image.reduceRegion(ee.Reducer.mean(), farm_area, 10)
                     date_str = ee.Date(image.get('system:time_start')).format('YYYY-MM-DD')
                     return ee.Feature(None, val).set('date', date_str)
                 
@@ -126,7 +130,6 @@ if st.button("Analyze Current Land Cover", type="primary"):
                     ndvi = (b8 - b4) / (b8 + b4) if (b8 + b4) != 0 else 0
                     ndwi = (b3 - b8) / (b3 + b8) if (b3 + b8) != 0 else 0
                     
-                    # --- THE 12-BAND PADDING TEST ---
                     # We create the 13-feature array (12 bands + 1 NDVI)
                     live_13_features = [b1, b2, b3, b4, b5, b6, b7, b8, b8a, b9, b11, b12, ndvi]
                     
@@ -150,7 +153,7 @@ if st.button("Analyze Current Land Cover", type="primary"):
                     st.success(f"✅ Live 12-Band Satellite Data Retrieved! Exact Capture Date: {capture_date}")
                     
                     st.metric("Detected Classification", prediction_label)
-                    st.metric("Vegetation Index (NDVI)", f"{ndvi:.3f}")
+                    # NOTE: The st.metric for NDVI has been removed here as requested!
                     
                     if ndvi < 0.25:
                         st.warning("Notice: Spectral reflection indicates a lack of active crop vegetation.")
