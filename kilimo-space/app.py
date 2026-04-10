@@ -151,7 +151,7 @@ if st.button("Run Deep Temporal Analysis", type="primary"):
                 progress_bar.progress((i + 1) / 13)
             
             # --- FINAL PREDICTION ---
-            status_text.text("✅ All 13 months retrieved! Analyzing growth curves...")
+            status_text.text("months retrived")
             
             # Convert the final 169-feature list to a DataFrame and scale it
             input_df = pd.DataFrame([master_169_array], columns=feature_cols)
@@ -165,16 +165,15 @@ if st.button("Run Deep Temporal Analysis", type="primary"):
 
             if latest_ndwi > 0.1:
                 prediction_label = "Water Body"
-            elif latest_ndvi < 0.25:
+            elif latest_ndvi < 0.15:
                 prediction_label = "Non-Vegetated (Bare Soil / Desert / Urban)"
             else:
                 pred_idx = model.predict(scaled_input)
                 prediction_label = le.inverse_transform(pred_idx)[0]
 
-            st.success("🎉 Deep Temporal Analysis Complete!")
             st.metric("Detected Crop Classification (Based on 12-Month History)", prediction_label)
             
-            if latest_ndvi < 0.25:
+            if latest_ndvi < 0.15:
                 st.warning("Notice: Recent spectral reflection indicates a lack of active crop vegetation right now.")
 
         except Exception as e:
