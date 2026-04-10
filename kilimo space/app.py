@@ -19,7 +19,10 @@ st.set_page_config(page_title="KilimoSpace Crop Predictor", layout="wide")
 def init_earth_engine():
     try:
         key_dict = json.loads(st.secrets["EARTHENGINE_TOKEN"])
-        credentials = ee.ServiceAccountCredentials(key_dict['client_email'], key_data=st.secrets["EARTHENGINE_TOKEN"])
+        credentials = ee.ServiceAccountCredentials(
+            key_dict['client_email'],
+            key_data=st.secrets["EARTHENGINE_TOKEN"]
+        )
         ee.Initialize(credentials)
         return True
     except Exception as e:
@@ -57,7 +60,7 @@ st.title("🌾 KilimoSpace: Sentinel-2 Real-Time Crop Classification")
 st.markdown("---")
 
 st.header("Live Satellite Inference")
-st.write("Select a target date and enter coordinates to fetch multispectral data from Copernicus Sentinel-2.")
+st.write("Select a target date and enter coordinates to fetch 12-band multispectral data from Copernicus Sentinel-2.")
 
 # User Inputs
 col1, col2, col3 = st.columns(3)
@@ -77,7 +80,7 @@ if st.button("Analyze Current Land Cover", type="primary"):
         address = get_location_details(lat, lon)
         st.info(f"📍 **Identified Region:** {address}")
 
-        with st.spinner(f"Accessing Google Earth Engine for data around {target_date}..."):
+        with st.spinner(f"Accessing Google Earth Engine for 12-band data around {target_date}..."):
             try:
                 point = ee.Geometry.Point([lon, lat])
                 
@@ -85,11 +88,12 @@ if st.button("Analyze Current Land Cover", type="primary"):
                 start_date = (target_date - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
                 end_date = (target_date + datetime.timedelta(days=30)).strftime('%Y-%m-%d')
                 
+                # Fetching ALL 12 Sentinel-2 SR bands
                 collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
                     .filterBounds(point) \
                     .filterDate(start_date, end_date) \
                     .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30)) \
-                    .select(['B2', 'B3', 'B4', 'B8']) \
+                    .select(['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12']) \
                     .sort('system:time_start', False)
                 
                 def extract_props(image):
@@ -103,17 +107,32 @@ if st.button("Analyze Current Land Cover", type="primary"):
                     st.error(f"No clear imagery found near {target_date}. Try a different date or location.")
                 else:
                     latest_props = features[0]['properties']
+                    
+                    # Extracting all 12 bands safely
+                    b1 = latest_props.get('B1', 0)
                     b2 = latest_props.get('B2', 0)
                     b3 = latest_props.get('B3', 0)
                     b4 = latest_props.get('B4', 0)
+                    b5 = latest_props.get('B5', 0)
+                    b6 = latest_props.get('B6', 0)
+                    b7 = latest_props.get('B7', 0)
                     b8 = latest_props.get('B8', 0)
+                    b8a = latest_props.get('B8A', 0)
+                    b9 = latest_props.get('B9', 0)
+                    b11 = latest_props.get('B11', 0)
+                    b12 = latest_props.get('B12', 0)
                     
                     # --- SPECTRAL ANALYSIS (NDVI & NDWI) ---
                     ndvi = (b8 - b4) / (b8 + b4) if (b8 + b4) != 0 else 0
                     ndwi = (b3 - b8) / (b3 + b8) if (b3 + b8) != 0 else 0
                     
-                    # Invisible Padding for the Model (169 columns)
-                    raw_data = ([b2, b3, b4, b8] * 43)[:len(feature_cols)]
+                    # --- THE 12-BAND PADDING TEST ---
+                    # We create the 13-feature array (12 bands + 1 NDVI)
+                    live_13_features = [b1, b2, b3, b4, b5, b6, b7, b8, b8a, b9, b11, b12, ndvi]
+                    
+                    # We multiply by 13 to stretch it across the 169 required columns
+                    raw_data = (live_13_features * 13)[:len(feature_cols)]
+                    
                     input_df = pd.DataFrame([raw_data], columns=feature_cols)
                     scaled_input = scaler.transform(input_df)
                     
@@ -128,7 +147,7 @@ if st.button("Analyze Current Land Cover", type="primary"):
 
                     # --- DISPLAY RESULTS ---
                     capture_date = features[0]['properties'].get('date', 'Unknown Date')[:10]
-                    st.success(f"✅ Live Satellite Data Retrieved! Exact Capture Date: {capture_date}")
+                    st.success(f"✅ Live 12-Band Satellite Data Retrieved! Exact Capture Date: {capture_date}")
                     
                     st.metric("Detected Classification", prediction_label)
                     st.metric("Vegetation Index (NDVI)", f"{ndvi:.3f}")
