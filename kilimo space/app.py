@@ -56,22 +56,22 @@ def get_location_details(lat, lon):
         return "Location lookup unavailable"
 
 # --- 4. App UI ---
-st.title("🌾 KilimoSpace: Sentinel-2 Real-Time Crop Classification")
+st.title("🌾 KilimoSpace: Ultimate 13-Month Time-Series Analysis")
 st.markdown("---")
 
-st.header("Live Satellite Inference")
-st.write("Select a target date and enter coordinates to fetch 12-band multispectral data from Copernicus Sentinel-2.")
+st.header("Deep Historical Inference")
+st.write("Select an analysis date. The app will scan the 13-month growth phenology of the farm leading up to that date, bypassing the padding hack to feed real historical data to the model.")
 
-# User Inputs
+# User Inputs: The Dynamic Lookback Window
 col1, col2, col3 = st.columns(3)
-target_date = col1.date_input("Select Target Date", datetime.date(2026, 1, 7))
+target_date = col1.date_input("Select Analysis Date", datetime.date.today())
 lat = col2.number_input("Latitude", value=0.515, format="%.5f") 
 lon = col3.number_input("Longitude", value=34.275, format="%.5f")
 
 # Visual Proof: The Map
 st.map(pd.DataFrame({'lat': [lat], 'lon': [lon]}), zoom=10)
 
-if st.button("Analyze Current Land Cover", type="primary"):
+if st.button("Run Deep Temporal Analysis", type="primary"):
     if not ee_ready:
         st.error("Earth Engine is not authenticated.")
     elif model is None:
@@ -80,83 +80,102 @@ if st.button("Analyze Current Land Cover", type="primary"):
         address = get_location_details(lat, lon)
         st.info(f"📍 **Identified Region:** {address}")
 
-        with st.spinner(f"Processing full farm area... Accessing GEE for 12-band data around {target_date}..."):
-            try:
-                # NEW: Instead of a single point, we create a 100-meter radius buffer around the point
-                # This forces Earth Engine to analyze the "whole farm" instead of one pixel
-                center_point = ee.Geometry.Point([lon, lat])
-                farm_area = center_point.buffer(100) 
+        # --- THE DYNAMIC FIX: Calculate the 13 months leading up to the chosen date ---
+        months_to_fetch = []
+        for i in range(12, -1, -1):  # Count backward from 12 down to 0
+            m = target_date.month - i
+            y = target_date.year
+            # Math trick to roll back the years if the month goes below 1 (January)
+            while m <= 0:
+                m += 12
+                y -= 1
+            # We use the 15th of each month as a safe middle-of-the-month target
+            months_to_fetch.append(datetime.date(y, m, 15))
+        
+        master_169_array = []
+        
+        st.warning("⏳ Initiating 13-Month Server Query. This will take 1-3 minutes. Please do not refresh...")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        try:
+            # 100-meter buffer to analyze the whole farm instead of one pixel
+            center_point = ee.Geometry.Point([lon, lat])
+            farm_area = center_point.buffer(100) 
+
+            # Loop through all 13 dynamically calculated months
+            for i, current_target_date in enumerate(months_to_fetch):
+                month_name = current_target_date.strftime('%B %Y')
+                status_text.text(f"Fetching cloud-free composite for {month_name} ({i+1}/13)...")
                 
-                # Fetch images within a 60-day window of the chosen date
-                start_date = (target_date - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
-                end_date = (target_date + datetime.timedelta(days=30)).strftime('%Y-%m-%d')
+                # Create a 30-day window for each month to find a clear image
+                start_date = (current_target_date - datetime.timedelta(days=15)).strftime('%Y-%m-%d')
+                end_date = (current_target_date + datetime.timedelta(days=15)).strftime('%Y-%m-%d')
                 
-                # Fetching ALL 12 Sentinel-2 SR bands
                 collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
                     .filterBounds(farm_area) \
                     .filterDate(start_date, end_date) \
                     .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30)) \
-                    .select(['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12']) \
-                    .sort('system:time_start', False)
+                    .select(['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12'])
                 
-                def extract_props(image):
-                    # NEW: Calculates the average of all pixels inside the 100m farm area
-                    val = image.reduceRegion(ee.Reducer.mean(), farm_area, 10)
-                    date_str = ee.Date(image.get('system:time_start')).format('YYYY-MM-DD')
-                    return ee.Feature(None, val).set('date', date_str)
+                # Get the mathematical median of the month to remove minor clouds
+                median_image = collection.median()
                 
-                features = collection.map(extract_props).getInfo()['features']
+                # Extract the 12 bands across the farm area
+                try:
+                    props = median_image.reduceRegion(ee.Reducer.mean(), farm_area, 10).getInfo()
+                except Exception as e:
+                    props = {} # If the whole month was too cloudy, fallback to empty
                 
-                if not features:
-                    st.error(f"No clear imagery found near {target_date}. Try a different date or location.")
-                else:
-                    latest_props = features[0]['properties']
-                    
-                    # Extracting all 12 bands safely
-                    b1 = latest_props.get('B1', 0)
-                    b2 = latest_props.get('B2', 0)
-                    b3 = latest_props.get('B3', 0)
-                    b4 = latest_props.get('B4', 0)
-                    b5 = latest_props.get('B5', 0)
-                    b6 = latest_props.get('B6', 0)
-                    b7 = latest_props.get('B7', 0)
-                    b8 = latest_props.get('B8', 0)
-                    b8a = latest_props.get('B8A', 0)
-                    b9 = latest_props.get('B9', 0)
-                    b11 = latest_props.get('B11', 0)
-                    b12 = latest_props.get('B12', 0)
-                    
-                    # --- SPECTRAL ANALYSIS (NDVI & NDWI) ---
-                    ndvi = (b8 - b4) / (b8 + b4) if (b8 + b4) != 0 else 0
-                    ndwi = (b3 - b8) / (b3 + b8) if (b3 + b8) != 0 else 0
-                    
-                    # We create the 13-feature array (12 bands + 1 NDVI)
-                    live_13_features = [b1, b2, b3, b4, b5, b6, b7, b8, b8a, b9, b11, b12, ndvi]
-                    
-                    # We multiply by 13 to stretch it across the 169 required columns
-                    raw_data = (live_13_features * 13)[:len(feature_cols)]
-                    
-                    input_df = pd.DataFrame([raw_data], columns=feature_cols)
-                    scaled_input = scaler.transform(input_df)
-                    
-                    # --- PREDICTION LOGIC ---
-                    if ndwi > 0.1:
-                        prediction_label = "Water Body"
-                    elif ndvi < 0.25:
-                        prediction_label = "Non-Vegetated (Bare Soil / Desert / Urban)"
-                    else:
-                        pred_idx = model.predict(scaled_input)
-                        prediction_label = le.inverse_transform(pred_idx)[0]
+                # Safely get values (if a month is totally cloudy, it defaults to 0 to prevent crashing)
+                b1 = props.get('B1') or 0
+                b2 = props.get('B2') or 0
+                b3 = props.get('B3') or 0
+                b4 = props.get('B4') or 0
+                b5 = props.get('B5') or 0
+                b6 = props.get('B6') or 0
+                b7 = props.get('B7') or 0
+                b8 = props.get('B8') or 0
+                b8a = props.get('B8A') or 0
+                b9 = props.get('B9') or 0
+                b11 = props.get('B11') or 0
+                b12 = props.get('B12') or 0
+                
+                # Calculate NDVI for this specific month
+                ndvi = (b8 - b4) / (b8 + b4) if (b8 + b4) != 0 else 0
+                
+                # Append these 13 values to our master array
+                master_169_array.extend([b1, b2, b3, b4, b5, b6, b7, b8, b8a, b9, b11, b12, ndvi])
+                
+                # Update UI Progress Bar
+                progress_bar.progress((i + 1) / 13)
+            
+            # --- FINAL PREDICTION ---
+            status_text.text("✅ All 13 months retrieved! Analyzing growth curves...")
+            
+            # Convert the final 169-feature list to a DataFrame and scale it
+            input_df = pd.DataFrame([master_169_array], columns=feature_cols)
+            scaled_input = scaler.transform(input_df)
+            
+            # Safety Gate: We check the most recent month's indices (the last 13 items in the array)
+            latest_ndvi = master_169_array[-1]
+            latest_b3 = master_169_array[-11]
+            latest_b8 = master_169_array[-6]
+            latest_ndwi = (latest_b3 - latest_b8) / (latest_b3 + latest_b8) if (latest_b3 + latest_b8) != 0 else 0
 
-                    # --- DISPLAY RESULTS ---
-                    capture_date = features[0]['properties'].get('date', 'Unknown Date')[:10]
-                    st.success(f"✅ Live 12-Band Satellite Data Retrieved! Exact Capture Date: {capture_date}")
-                    
-                    st.metric("Detected Classification", prediction_label)
-                    # NOTE: The st.metric for NDVI has been removed here as requested!
-                    
-                    if ndvi < 0.25:
-                        st.warning("Notice: Spectral reflection indicates a lack of active crop vegetation.")
+            if latest_ndwi > 0.1:
+                prediction_label = "Water Body"
+            elif latest_ndvi < 0.25:
+                prediction_label = "Non-Vegetated (Bare Soil / Desert / Urban)"
+            else:
+                pred_idx = model.predict(scaled_input)
+                prediction_label = le.inverse_transform(pred_idx)[0]
 
-            except Exception as e:
-                st.error(f"Live Analysis Failed: {e}")
+            st.success("🎉 Deep Temporal Analysis Complete!")
+            st.metric("Detected Crop Classification (Based on 12-Month History)", prediction_label)
+            
+            if latest_ndvi < 0.25:
+                st.warning("Notice: Recent spectral reflection indicates a lack of active crop vegetation right now.")
+
+        except Exception as e:
+            st.error(f"Deep Analysis Failed or Timed Out: {e}")
